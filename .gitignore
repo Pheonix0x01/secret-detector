@@ -1,0 +1,8 @@
+.env
+tasks.md
+/target
+/Cargo.lock
+.env
+scan_states.json
+*.log
+README.md

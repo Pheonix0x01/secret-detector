@@ -1,0 +1,19 @@
+{
+  "jsonrpc": "2.0",
+  "id": "test-123",
+  "method": "agent/invoke",
+  "params": {
+    "conversationId": "conv-test-123",
+    "task": {
+      "id": "task-test-123",
+      "description": "Scan GitHub repositories for secrets"
+    },
+    "userMessage": {
+      "role": "user",
+      "content": "scan https://github.com/octocat/Hello-World"
+    },
+    "context": {
+      "history": []
+    }
+  }
+}
