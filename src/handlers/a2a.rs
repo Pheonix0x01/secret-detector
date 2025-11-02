@@ -130,24 +130,37 @@ async fn send_webhook_response(url: &str, token: Option<&str>, response: &A2ARes
         }
     });
     
+    info!("=== WEBHOOK PAYLOAD ===");
+    info!("{}", serde_json::to_string_pretty(&webhook_payload).unwrap_or_default());
+    info!("======================");
+    
     let client = Client::new();
     let mut request = client.post(url).json(&webhook_payload);
     
     if let Some(token) = token {
+        info!("Using Bearer token: {}...", &token[..20.min(token.len())]);
         request = request.header("Authorization", format!("Bearer {}", token));
     }
     
-    info!("Sending webhook response to: {}", url);
+    info!("Sending webhook to: {}", url);
     let resp = request.send().await?;
     
-    if resp.status().is_success() {
-        info!("Webhook response sent successfully");
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let response_body = resp.text().await.unwrap_or_default();
+    
+    info!("=== WEBHOOK RESPONSE ===");
+    info!("Status: {}", status);
+    info!("Headers: {:?}", headers);
+    info!("Body: {}", response_body);
+    info!("========================");
+    
+    if status.is_success() {
+        info!("✅ Webhook accepted by Telex");
         Ok(())
     } else {
-        let status = resp.status();
-        let error_text = resp.text().await.unwrap_or_default();
-        error!("Webhook failed with status {}: {}", status, error_text);
-        Err(anyhow::anyhow!("Webhook failed: {} - {}", status, error_text))
+        error!("❌ Webhook rejected: {} - {}", status, response_body);
+        Err(anyhow::anyhow!("Webhook failed: {} - {}", status, response_body))
     }
 }
 
