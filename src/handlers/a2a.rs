@@ -121,7 +121,12 @@ async fn send_webhook_response(url: &str, token: Option<&str>, response: &A2ARes
         "id": request_id,
         "method": "message/send",
         "params": {
-            "message": response.result.message
+            "message": {
+                "kind": "message",
+                "role": "agent",
+                "messageId": uuid::Uuid::new_v4().to_string(),
+                "parts": response.result.message.parts
+            }
         }
     });
     
@@ -154,7 +159,8 @@ async fn send_webhook_error(url: &str, token: Option<&str>, error_msg: &str, req
         "params": {
             "message": {
                 "kind": "message",
-                "role": "assistant",
+                "role": "agent",
+                "messageId": uuid::Uuid::new_v4().to_string(),
                 "parts": [
                     {
                         "kind": "text",
