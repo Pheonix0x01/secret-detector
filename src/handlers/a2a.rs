@@ -7,6 +7,7 @@ use crate::services::state::StateManager;
 use actix_web::{web, HttpResponse, HttpRequest, Result as ActixResult};
 use chrono::Utc;
 use serde_json::json;
+use uuid::Uuid;
 use reqwest::Client;
 use std::sync::Arc;
 use log::{info, error};
@@ -188,8 +189,14 @@ async fn send_webhook_result(url: &str, token: Option<&str>, result_text: &str, 
         "jsonrpc": "2.0",
         "id": request_id,
         "method": "message/send",
-        "params": {                
-            "result": {            
+        "params": {
+            "message": {
+                "kind": "message",
+                "role": "agent",
+                "messageId": uuid::Uuid::new_v4().to_string(),
+                "parts": []
+            },
+            "result": {
                 "artifacts": [
                     {
                         "kind": "text",
@@ -243,11 +250,17 @@ async fn send_webhook_error(url: &str, token: Option<&str>, error_msg: &str, req
         "id": request_id,
         "method": "message/send",
         "params": {
+            "message": {
+                "kind": "message",
+                "role": "agent",
+                "messageId": uuid::Uuid::new_v4().to_string(),
+                "parts": []
+            },
             "result": {
                 "artifacts": [
                     {
                         "kind": "text",
-                        "text": format!("❌ Error: {}", error_msg)
+                        "text": format!("Error: {}", error_msg)
                     }
                 ],
                 "history": [],
