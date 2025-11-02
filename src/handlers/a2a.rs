@@ -187,15 +187,18 @@ async fn send_webhook_result(url: &str, token: Option<&str>, result_text: &str, 
     let webhook_payload = json!({
         "jsonrpc": "2.0",
         "id": request_id,
-        "result": {
-            "artifacts": [
-                {
-                    "kind": "text",
-                    "text": result_text
-                }
-            ],
-            "history": [],
-            "kind": "task"
+        "method": "message/send",
+        "params": {                
+            "result": {            
+                "artifacts": [
+                    {
+                        "kind": "text",
+                        "text": result_text
+                    }
+                ],
+                "history": [],
+                "kind": "task"
+            }
         }
     });
     
@@ -238,15 +241,18 @@ async fn send_webhook_error(url: &str, token: Option<&str>, error_msg: &str, req
     let webhook_payload = json!({
         "jsonrpc": "2.0",
         "id": request_id,
-        "result": {
-            "artifacts": [
-                {
-                    "kind": "text",
-                    "text": format!("❌ Error: {}", error_msg)
-                }
-            ],
-            "history": [],
-            "kind": "task"
+        "method": "message/send",
+        "params": {
+            "result": {
+                "artifacts": [
+                    {
+                        "kind": "text",
+                        "text": format!("❌ Error: {}", error_msg)
+                    }
+                ],
+                "history": [],
+                "kind": "task"
+            }
         }
     });
     
