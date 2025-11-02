@@ -4,7 +4,7 @@ use crate::services::github::GitHubClient;
 use crate::services::scanner::SecretScanner;
 use crate::services::gemini::GeminiClient;
 use crate::services::state::StateManager;
-use actix_web::{web, HttpResponse, Result as ActixResult};
+use actix_web::{web, HttpResponse, HttpRequest, Result as ActixResult};
 use chrono::Utc;
 use std::sync::Arc;
 use log::{info, error};
@@ -18,12 +18,26 @@ pub struct AppState {
 }
 
 pub async fn handle_a2a_request(
-    req: web::Json<A2ARequest>,
+    req: HttpRequest,
+    body: web::Bytes,
     data: web::Data<AppState>,
 ) -> ActixResult<HttpResponse> {
-    let request_id = req.id.clone();
+    let body_str = String::from_utf8_lossy(&body);
+    info!("Received request body: {}", body_str);
     
-    match process_request(&req, &data).await {
+    let a2a_request: A2ARequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Failed to parse A2A request: {}. Body was: {}", e, body_str);
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": format!("Invalid request format: {}", e)
+            })));
+        }
+    };
+    
+    let request_id = a2a_request.id.clone();
+    
+    match process_request(&a2a_request, &data).await {
         Ok(response) => Ok(HttpResponse::Ok().json(response)),
         Err(e) => {
             error!("Request processing failed: {}", e);

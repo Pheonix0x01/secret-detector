@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct A2ARequest {
     pub jsonrpc: String,
     pub id: String,
+    #[serde(default)]
     pub method: String,
     pub params: A2AParams,
 }
@@ -12,16 +13,22 @@ pub struct A2ARequest {
 pub struct A2AParams {
     #[serde(rename = "conversationId")]
     pub conversation_id: String,
-    pub task: Task,
+    
+    #[serde(default)]
+    pub task: Option<Task>,
+    
     #[serde(rename = "userMessage")]
     pub user_message: Message,
+    
+    #[serde(default)]
     pub context: Context,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Task {
     pub id: String,
-    pub description: String,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -30,8 +37,9 @@ pub struct Message {
     pub content: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Context {
+    #[serde(default)]
     pub history: Vec<Message>,
 }
 
@@ -70,6 +78,7 @@ pub struct A2AErrorResponse {
 pub struct A2AError {
     pub code: i32,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<A2AErrorData>,
 }
 
