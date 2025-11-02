@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct A2ARequest {
     pub jsonrpc: String,
     pub id: String,
@@ -9,7 +9,7 @@ pub struct A2ARequest {
     pub params: A2AParams,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct A2AParams {
     pub message: TelexMessage,
     
@@ -23,7 +23,7 @@ pub struct SimpleMessage {
     pub content: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TelexMessage {
     pub kind: String,
     pub role: String,
@@ -43,7 +43,7 @@ pub enum MessagePart {
     Data { data: Vec<Value> },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Configuration {
     #[serde(rename = "acceptedOutputModes")]
     pub accepted_output_modes: Vec<String>,

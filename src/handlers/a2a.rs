@@ -9,6 +9,7 @@ use crate::services::scanner::SecretScanner;
 use crate::services::gemini::GeminiClient;
 use crate::services::state::StateManager;
 use actix_web::{web, HttpResponse, HttpRequest, Result as ActixResult};
+use reqwest::Client;
 use chrono::Utc;
 use std::sync::Arc;
 use log::{info, error};
@@ -40,24 +41,136 @@ pub async fn handle_a2a_request(
     };
     
     let request_id = a2a_request.id.clone();
+    let is_blocking = a2a_request.params.configuration
+        .as_ref()
+        .map(|c| c.blocking)
+        .unwrap_or(true);
     
-    match process_request(&a2a_request, &data).await {
-        Ok(response) => Ok(HttpResponse::Ok().json(response)),
-        Err(e) => {
-            error!("Request processing failed: {}", e);
-            let error_response = A2AErrorResponse {
-                jsonrpc: "2.0".to_string(),
-                id: request_id,
-                error: A2AError {
-                    code: -32603,
-                    message: "Internal error".to_string(),
-                    data: Some(A2AErrorData {
-                        details: e.to_string(),
-                    }),
-                },
-            };
-            Ok(HttpResponse::Ok().json(error_response))
+    if is_blocking {
+        match process_request(&a2a_request, &data).await {
+            Ok(response) => Ok(HttpResponse::Ok().json(response)),
+            Err(e) => {
+                error!("Request processing failed: {}", e);
+                let error_response = A2AErrorResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request_id,
+                    error: A2AError {
+                        code: -32603,
+                        message: "Internal error".to_string(),
+                        data: Some(A2AErrorData {
+                            details: e.to_string(),
+                        }),
+                    },
+                };
+                Ok(HttpResponse::Ok().json(error_response))
+            }
         }
+    } else {
+        let webhook_url = a2a_request.params.configuration
+            .as_ref()
+            .and_then(|c| c.push_notification_config.as_ref())
+            .and_then(|p| p.get("url"))
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string());
+        
+        let webhook_token = a2a_request.params.configuration
+            .as_ref()
+            .and_then(|c| c.push_notification_config.as_ref())
+            .and_then(|p| p.get("token"))
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string());
+        
+        if let Some(url) = webhook_url {
+            info!("Non-blocking request, will send response to webhook: {}", url);
+            
+            let data_clone = data.clone();
+            let req_clone = a2a_request.clone();
+            
+            actix_web::rt::spawn(async move {
+                match process_request(&req_clone, &data_clone).await {
+                    Ok(response) => {
+                        if let Err(e) = send_webhook_response(&url, webhook_token.as_deref(), &response).await {
+                            error!("Failed to send webhook response: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Request processing failed: {}", e);
+                        let error_response = A2AErrorResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id: req_clone.id,
+                            error: A2AError {
+                                code: -32603,
+                                message: "Internal error".to_string(),
+                                data: Some(A2AErrorData {
+                                    details: e.to_string(),
+                                }),
+                            },
+                        };
+                        
+                        if let Err(e) = send_webhook_error(&url, webhook_token.as_deref(), &error_response).await {
+                            error!("Failed to send webhook error: {}", e);
+                        }
+                    }
+                }
+            });
+            
+            Ok(HttpResponse::Accepted().json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "status": "processing"
+                }
+            })))
+        } else {
+            error!("Non-blocking request but no webhook URL provided");
+            Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Non-blocking mode requires webhook URL"
+            })))
+        }
+    }
+}
+
+async fn send_webhook_response(url: &str, token: Option<&str>, response: &A2AResponse) -> anyhow::Result<()> {
+    let client = Client::new();
+    let mut request = client.post(url).json(response);
+    
+    if let Some(token) = token {
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+    
+    info!("Sending webhook response to: {}", url);
+    let resp = request.send().await?;
+    
+    if resp.status().is_success() {
+        info!("Webhook response sent successfully");
+        Ok(())
+    } else {
+        let status = resp.status();
+        let error_text = resp.text().await.unwrap_or_default();
+        error!("Webhook failed with status {}: {}", status, error_text);
+        Err(anyhow::anyhow!("Webhook failed: {} - {}", status, error_text))
+    }
+}
+
+async fn send_webhook_error(url: &str, token: Option<&str>, error: &A2AErrorResponse) -> anyhow::Result<()> {
+    let client = Client::new();
+    let mut request = client.post(url).json(error);
+    
+    if let Some(token) = token {
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+    
+    info!("Sending webhook error to: {}", url);
+    let resp = request.send().await?;
+    
+    if resp.status().is_success() {
+        info!("Webhook error sent successfully");
+        Ok(())
+    } else {
+        let status = resp.status();
+        let error_text = resp.text().await.unwrap_or_default();
+        error!("Webhook failed with status {}: {}", status, error_text);
+        Err(anyhow::anyhow!("Webhook failed: {} - {}", status, error_text))
     }
 }
 
