@@ -117,17 +117,26 @@ pub async fn handle_a2a_request(
 }
 
 async fn send_webhook_response(url: &str, token: Option<&str>, response: &A2AResponse, request_id: &str) -> anyhow::Result<()> {
+    let response_text = response.result.message.parts
+        .first()
+        .map(|p| p.text.clone())
+        .unwrap_or_default();
+    
     let webhook_payload = json!({
         "jsonrpc": "2.0",
         "id": request_id,
-        "method": "message/send",
-        "params": {
-            "message": {
-                "kind": "message",
-                "role": "agent",
-                "messageId": uuid::Uuid::new_v4().to_string(),
-                "parts": response.result.message.parts.clone()
-            }
+        "result": {
+            "contextId": uuid::Uuid::new_v4().to_string(),
+            "state": "working",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "artifacts": [
+                {
+                    "kind": "text",
+                    "text": response_text
+                }
+            ],
+            "history": [],
+            "kind": "task"
         }
     });
     
@@ -157,10 +166,10 @@ async fn send_webhook_response(url: &str, token: Option<&str>, response: &A2ARes
     info!("========================");
     
     if status.is_success() {
-        info!("✅ Webhook accepted by Telex");
+        info!("Webhook accepted by Telex");
         Ok(())
     } else {
-        error!("❌ Webhook rejected: {} - {}", status, response_body);
+        error!("Webhook rejected: {} - {}", status, response_body);
         Err(anyhow::anyhow!("Webhook failed: {} - {}", status, response_body))
     }
 }
@@ -169,31 +178,30 @@ async fn send_webhook_error(url: &str, token: Option<&str>, error_msg: &str, req
     let webhook_payload = json!({
         "jsonrpc": "2.0",
         "id": request_id,
-        "method": "message/send",
-        "params": {
-            "message": {
-                "kind": "message",
-                "role": "agent",
-                "messageId": uuid::Uuid::new_v4().to_string(),
-                "parts": [
-                    {
-                        "kind": "text",
-                        "text": format!("Sorry, an error occurred while processing your request: {}", error_msg)
-                    }
-                ]
-            }
+        "result": {
+            "contextId": uuid::Uuid::new_v4().to_string(),
+            "state": "working",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "artifacts": [
+                {
+                    "kind": "text",
+                    "text": format!("❌ Error: {}", error_msg)
+                }
+            ],
+            "history": [],
+            "kind": "task"
         }
     });
     
     let client = Client::new();
-    let mut request = client.post(url).json(&webhook_payload);
+    let mut request_builder = client.post(url).json(&webhook_payload);
     
     if let Some(token) = token {
-        request = request.header("Authorization", format!("Bearer {}", token));
+        request_builder = request_builder.header("Authorization", format!("Bearer {}", token));
     }
     
     info!("Sending webhook error to: {}", url);
-    let resp = request.send().await?;
+    let resp = request_builder.send().await?;
     
     if resp.status().is_success() {
         info!("Webhook error sent successfully");
