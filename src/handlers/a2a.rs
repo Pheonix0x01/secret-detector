@@ -1,4 +1,4 @@
-use crate::models::a2a::{A2ARequest, A2AParams, A2AResponse, A2AResult, A2AErrorResponse, A2AError, A2AErrorData, TelexMessage, MessagePart, ResponseMessage, ResponsePart};
+use crate::models::a2a::{A2ARequest, A2AResponse, A2AResult, A2AErrorResponse, A2AError, A2AErrorData, TelexMessage, MessagePart, ResponseMessage, ResponsePart};
 use crate::models::scan::{ScanMode, ScanState, ScanStatus};
 use crate::services::github::GitHubClient;
 use crate::services::scanner::SecretScanner;
@@ -20,7 +20,7 @@ pub struct AppState {
 }
 
 pub async fn handle_a2a_request(
-    req: HttpRequest,
+    _req: HttpRequest,
     body: web::Bytes,
     data: web::Data<AppState>,
 ) -> ActixResult<HttpResponse> {
@@ -38,11 +38,11 @@ pub async fn handle_a2a_request(
     };
     
     let request_id = a2a_request.id.clone();
-    let is_blocking = true;
-    // let is_blocking = a2a_request.params.configuration
-    //     .as_ref()
-    //     .map(|c| c.blocking)
-    //     .unwrap_or(true);
+    // let is_blocking = true;
+    let is_blocking = a2a_request.params.configuration
+        .as_ref()
+        .map(|c| c.blocking)
+        .unwrap_or(true);
     
     if is_blocking {
         match process_request(&a2a_request, &data).await {
@@ -126,7 +126,7 @@ async fn send_webhook_response(url: &str, token: Option<&str>, response: &A2ARes
                 "kind": "message",
                 "role": "agent",
                 "messageId": uuid::Uuid::new_v4().to_string(),
-                "parts": response.result.message.parts
+                "parts": response.result.message.parts.clone()
             }
         }
     });
@@ -136,15 +136,15 @@ async fn send_webhook_response(url: &str, token: Option<&str>, response: &A2ARes
     info!("======================");
     
     let client = Client::new();
-    let mut request = client.post(url).json(&webhook_payload);
+    let mut request_builder = client.post(url).json(&webhook_payload);
     
     if let Some(token) = token {
-        info!("Using Bearer token: {}...", &token[..20.min(token.len())]);
-        request = request.header("Authorization", format!("Bearer {}", token));
+        info!("Using Bearer token for authentication");
+        request_builder = request_builder.header("Authorization", format!("Bearer {}", token));
     }
     
     info!("Sending webhook to: {}", url);
-    let resp = request.send().await?;
+    let resp = request_builder.send().await?;
     
     let status = resp.status();
     let headers = resp.headers().clone();

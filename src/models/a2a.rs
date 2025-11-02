@@ -76,7 +76,7 @@ pub struct ResponseMessage {
     pub parts: Vec<ResponsePart>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ResponsePart {
     pub kind: String,
     pub text: String,
