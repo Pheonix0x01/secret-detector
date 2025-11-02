@@ -1,8 +1,4 @@
-use crate::models::a2a::{
-    A2ARequest, A2AResponse, A2AResult, ResponseMessage, ResponsePart,
-    A2AErrorResponse, A2AError, A2AErrorData, MessagePart, TelexMessage,
-    SimpleMessage,
-};
+use crate::models::a2a::{A2ARequest, A2AParams, A2AResponse, A2AResult, A2AErrorResponse, A2AError, A2AErrorData, TelexMessage, MessagePart, ResponseMessage, ResponsePart};
 use crate::models::scan::{ScanMode, ScanState, ScanStatus};
 use crate::services::github::GitHubClient;
 use crate::services::scanner::SecretScanner;
@@ -13,6 +9,7 @@ use reqwest::Client;
 use chrono::Utc;
 use std::sync::Arc;
 use log::{info, error};
+use serde_json::json;
 
 pub struct AppState {
     pub github_client: GitHubClient,
@@ -89,25 +86,13 @@ pub async fn handle_a2a_request(
             actix_web::rt::spawn(async move {
                 match process_request(&req_clone, &data_clone).await {
                     Ok(response) => {
-                        if let Err(e) = send_webhook_response(&url, webhook_token.as_deref(), &response).await {
+                        if let Err(e) = send_webhook_response(&url, webhook_token.as_deref(), &response, &req_clone.id).await {
                             error!("Failed to send webhook response: {}", e);
                         }
                     }
                     Err(e) => {
                         error!("Request processing failed: {}", e);
-                        let error_response = A2AErrorResponse {
-                            jsonrpc: "2.0".to_string(),
-                            id: req_clone.id,
-                            error: A2AError {
-                                code: -32603,
-                                message: "Internal error".to_string(),
-                                data: Some(A2AErrorData {
-                                    details: e.to_string(),
-                                }),
-                            },
-                        };
-                        
-                        if let Err(e) = send_webhook_error(&url, webhook_token.as_deref(), &error_response).await {
+                        if let Err(e) = send_webhook_error(&url, webhook_token.as_deref(), &e.to_string(), &req_clone.id).await {
                             error!("Failed to send webhook error: {}", e);
                         }
                     }
@@ -130,9 +115,18 @@ pub async fn handle_a2a_request(
     }
 }
 
-async fn send_webhook_response(url: &str, token: Option<&str>, response: &A2AResponse) -> anyhow::Result<()> {
+async fn send_webhook_response(url: &str, token: Option<&str>, response: &A2AResponse, request_id: &str) -> anyhow::Result<()> {
+    let webhook_payload = json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "message/send",
+        "params": {
+            "message": response.result.message
+        }
+    });
+    
     let client = Client::new();
-    let mut request = client.post(url).json(response);
+    let mut request = client.post(url).json(&webhook_payload);
     
     if let Some(token) = token {
         request = request.header("Authorization", format!("Bearer {}", token));
@@ -152,9 +146,27 @@ async fn send_webhook_response(url: &str, token: Option<&str>, response: &A2ARes
     }
 }
 
-async fn send_webhook_error(url: &str, token: Option<&str>, error: &A2AErrorResponse) -> anyhow::Result<()> {
+async fn send_webhook_error(url: &str, token: Option<&str>, error_msg: &str, request_id: &str) -> anyhow::Result<()> {
+    let webhook_payload = json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "message/send",
+        "params": {
+            "message": {
+                "kind": "message",
+                "role": "assistant",
+                "parts": [
+                    {
+                        "kind": "text",
+                        "text": format!("Sorry, an error occurred while processing your request: {}", error_msg)
+                    }
+                ]
+            }
+        }
+    });
+    
     let client = Client::new();
-    let mut request = client.post(url).json(error);
+    let mut request = client.post(url).json(&webhook_payload);
     
     if let Some(token) = token {
         request = request.header("Authorization", format!("Bearer {}", token));
@@ -178,12 +190,11 @@ async fn process_request(
     req: &A2ARequest,
     data: &web::Data<AppState>,
 ) -> anyhow::Result<A2AResponse> {
-    let user_text = extract_user_message(&req.params.message)?;
+    let user_message = extract_user_message(&req.params.message)?;
     
-    info!("Processing request: {}", user_text);
+    info!("Processing request: {}", user_message);
     
-    let empty_history: Vec<SimpleMessage> = vec![];
-    let command = data.gemini_client.parse_user_intent(&user_text, &empty_history).await?;
+    let command = data.gemini_client.parse_user_intent(&user_message, &[]).await?;
     
     info!("Parsed command - action: {}, mode: {}", command.action, command.scan_mode);
     
@@ -239,29 +250,23 @@ fn extract_user_message(message: &TelexMessage) -> anyhow::Result<String> {
         match part {
             MessagePart::Text { text } => {
                 info!("Part {}: Text = '{}'", i, text);
+                if !text.trim().is_empty() {
+                    return Ok(text.clone());
+                }
             }
             MessagePart::Data { data } => {
                 info!("Part {}: Data with {} items", i, data.len());
                 for (j, item) in data.iter().enumerate() {
                     info!("  Data[{}]: {}", j, item);
-                }
-            }
-        }
-    }
-    
-    for part in message.parts.iter().rev() {
-        if let MessagePart::Data { data } = part {
-            for item in data.iter().rev() {
-                if let Some(kind) = item.get("kind").and_then(|k| k.as_str()) {
-                    if kind == "text" {
-                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                            if !text.is_empty() {
-                                let cleaned = strip_html_tags(text);
-                                if !cleaned.trim().is_empty() {
-                                    info!("✓ Found message in data: '{}'", cleaned);
-                                    return Ok(cleaned.trim().to_string());
-                                }
-                            }
+                    if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                        let text = text.trim();
+                        if !text.is_empty() 
+                            && !text.starts_with("<p>") 
+                            && !text.starts_with("Scanning")
+                            && !text.starts_with("Here")
+                            && text.len() > 5 {
+                            info!("✓ Found message in data: '{}'", text);
+                            return Ok(text.to_string());
                         }
                     }
                 }
@@ -269,43 +274,7 @@ fn extract_user_message(message: &TelexMessage) -> anyhow::Result<String> {
         }
     }
     
-    for part in message.parts.iter().rev() {
-        if let MessagePart::Text { text } = part {
-            if !text.is_empty() {
-                let cleaned = strip_html_tags(text);
-                if !cleaned.trim().is_empty() {
-                    info!("✓ Found message in text part: '{}'", cleaned);
-                    return Ok(cleaned.trim().to_string());
-                }
-            }
-        }
-    }
-    
-    error!("❌ No text found in any message parts");
-    Err(anyhow::anyhow!("No text found in message parts"))
-}
-
-fn strip_html_tags(html: &str) -> String {
-    let mut result = html.to_string();
-    
-    if let Some(start) = result.find("href=\"") {
-        if let Some(end) = result[start+6..].find("\"") {
-            let url = &result[start+6..start+6+end];
-            if url.contains("github.com") {
-                return url.to_string();
-            }
-        }
-    }
-
-    result = result
-        .replace("<p>", "")
-        .replace("</p>", " ")
-        .replace("<a", "")
-        .replace("</a>", "")
-        .replace(">", " ")
-        .replace("  ", " ");
-    
-    result.trim().to_string()
+    Err(anyhow::anyhow!("No valid user message found"))
 }
 
 async fn execute_scan(
