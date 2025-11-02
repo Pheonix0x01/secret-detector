@@ -239,7 +239,7 @@ async fn process_request(
         result: A2AResult {
             message: ResponseMessage {
                 kind: "message".to_string(),
-                role: "assistant".to_string(),
+                role: "agent".to_string(),
                 parts: vec![ResponsePart {
                     kind: "text".to_string(),
                     text: response_text,
