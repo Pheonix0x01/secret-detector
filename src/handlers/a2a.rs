@@ -1,4 +1,8 @@
-use crate::models::a2a::{A2ARequest, A2AResponse, A2AResult, A2AErrorResponse, A2AError, A2AErrorData, Message};
+use crate::models::a2a::{
+    A2ARequest, A2AResponse, A2AResult, ResponseMessage, ResponsePart,
+    A2AErrorResponse, A2AError, A2AErrorData, MessagePart, TelexMessage,
+    SimpleMessage,
+};
 use crate::models::scan::{ScanMode, ScanState, ScanStatus};
 use crate::services::github::GitHubClient;
 use crate::services::scanner::SecretScanner;
@@ -61,12 +65,12 @@ async fn process_request(
     req: &A2ARequest,
     data: &web::Data<AppState>,
 ) -> anyhow::Result<A2AResponse> {
-    let user_message = &req.params.user_message.content;
-    let history = &req.params.context.history;
+    let user_text = extract_user_message(&req.params.message)?;
     
-    info!("Processing request: {}", user_message);
+    info!("Processing request: {}", user_text);
     
-    let command = data.gemini_client.parse_user_intent(user_message, history).await?;
+    let empty_history: Vec<SimpleMessage> = vec![];
+    let command = data.gemini_client.parse_user_intent(&user_text, &empty_history).await?;
     
     info!("Parsed command - action: {}, mode: {}", command.action, command.scan_mode);
     
@@ -99,23 +103,53 @@ async fn process_request(
     
     info!("Generated response text, length: {}", response_text.len());
     
-    let mut updated_history = history.clone();
-    updated_history.push(req.params.user_message.clone());
-    updated_history.push(Message {
-        role: "assistant".to_string(),
-        content: response_text.clone(),
-    });
-    
     Ok(A2AResponse {
         jsonrpc: "2.0".to_string(),
         id: req.id.clone(),
         result: A2AResult {
-            conversation_id: req.params.conversation_id.clone(),
-            text: response_text,
-            artifacts: vec![],
-            history: updated_history,
+            message: ResponseMessage {
+                kind: "message".to_string(),
+                role: "assistant".to_string(),
+                parts: vec![ResponsePart {
+                    kind: "text".to_string(),
+                    text: response_text,
+                }],
+            },
         },
     })
+}
+
+fn extract_user_message(message: &TelexMessage) -> anyhow::Result<String> {
+    for part in message.parts.iter().rev() {
+        if let MessagePart::Text { text } = part {
+            if !text.is_empty() {
+                let cleaned = strip_html_tags(text);
+                
+                if !cleaned.trim().is_empty() {
+                    return Ok(cleaned.trim().to_string());
+                }
+            }
+        }
+    }
+    
+    Err(anyhow::anyhow!("No text found in message parts"))
+}
+
+fn strip_html_tags(html: &str) -> String {
+    let mut result = html.to_string();
+    
+    result = result.replace("<p>", "").replace("</p>", "");
+    
+    if let Some(start) = result.find("href=\"") {
+        if let Some(end) = result[start+6..].find("\"") {
+            let url = &result[start+6..start+6+end];
+            result = url.to_string();
+        }
+    }
+
+    result = result.replace("</a>", "").replace(">", "");
+    
+    result
 }
 
 async fn execute_scan(

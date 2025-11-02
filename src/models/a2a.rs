@@ -1,46 +1,60 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct A2ARequest {
     pub jsonrpc: String,
     pub id: String,
-    #[serde(default)]
     pub method: String,
     pub params: A2AParams,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct A2AParams {
-    #[serde(rename = "conversationId")]
-    pub conversation_id: String,
+    pub message: TelexMessage,
     
     #[serde(default)]
-    pub task: Option<Task>,
-    
-    #[serde(rename = "userMessage")]
-    pub user_message: Message,
-    
-    #[serde(default)]
-    pub context: Context,
+    pub configuration: Option<Configuration>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Task {
-    pub id: String,
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Message {
+pub struct SimpleMessage {
     pub role: String,
     pub content: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct Context {
-    #[serde(default)]
-    pub history: Vec<Message>,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TelexMessage {
+    pub kind: String,
+    pub role: String,
+    pub parts: Vec<MessagePart>,
+    
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "kind")]
+pub enum MessagePart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    
+    #[serde(rename = "data")]
+    Data { data: Vec<Value> },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Configuration {
+    #[serde(rename = "acceptedOutputModes")]
+    pub accepted_output_modes: Vec<String>,
+    
+    #[serde(rename = "historyLength")]
+    pub history_length: u32,
+    
+    #[serde(rename = "pushNotificationConfig", skip_serializing_if = "Option::is_none")]
+    pub push_notification_config: Option<Value>,
+    
+    pub blocking: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -52,19 +66,20 @@ pub struct A2AResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct A2AResult {
-    #[serde(rename = "conversationId")]
-    pub conversation_id: String,
-    pub text: String,
-    pub artifacts: Vec<Artifact>,
-    pub history: Vec<Message>,
+    pub message: ResponseMessage,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Artifact {
-    #[serde(rename = "type")]
-    pub artifact_type: String,
-    pub title: String,
-    pub content: String,
+pub struct ResponseMessage {
+    pub kind: String,
+    pub role: String,
+    pub parts: Vec<ResponsePart>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResponsePart {
+    pub kind: String,
+    pub text: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,6 +93,7 @@ pub struct A2AErrorResponse {
 pub struct A2AError {
     pub code: i32,
     pub message: String,
+    
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<A2AErrorData>,
 }

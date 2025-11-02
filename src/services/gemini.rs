@@ -1,5 +1,5 @@
 use crate::models::scan::Finding;
-use crate::models::a2a::Message;
+use crate::models::a2a::SimpleMessage;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use log::{info, error};
@@ -122,7 +122,7 @@ impl GeminiClient {
         Ok(text)
     }
 
-    pub async fn parse_user_intent(&self, message: &str, history: &[Message]) -> Result<ScanCommand> {
+    pub async fn parse_user_intent(&self, message: &str, history: &[SimpleMessage]) -> Result<ScanCommand> {
         let history_context = history
             .iter()
             .map(|m| format!("{}: {}", m.role, m.content))
