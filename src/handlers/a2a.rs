@@ -120,36 +120,79 @@ async fn process_request(
 }
 
 fn extract_user_message(message: &TelexMessage) -> anyhow::Result<String> {
+    info!("Extracting message from {} parts", message.parts.len());
+    
+    for (i, part) in message.parts.iter().enumerate() {
+        match part {
+            MessagePart::Text { text } => {
+                info!("Part {}: Text = '{}'", i, text);
+            }
+            MessagePart::Data { data } => {
+                info!("Part {}: Data with {} items", i, data.len());
+                for (j, item) in data.iter().enumerate() {
+                    info!("  Data[{}]: {}", j, item);
+                }
+            }
+        }
+    }
+    
+    for part in message.parts.iter().rev() {
+        if let MessagePart::Data { data } = part {
+            for item in data.iter().rev() {
+                if let Some(kind) = item.get("kind").and_then(|k| k.as_str()) {
+                    if kind == "text" {
+                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                            if !text.is_empty() {
+                                let cleaned = strip_html_tags(text);
+                                if !cleaned.trim().is_empty() {
+                                    info!("✓ Found message in data: '{}'", cleaned);
+                                    return Ok(cleaned.trim().to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     for part in message.parts.iter().rev() {
         if let MessagePart::Text { text } = part {
             if !text.is_empty() {
                 let cleaned = strip_html_tags(text);
-                
                 if !cleaned.trim().is_empty() {
+                    info!("✓ Found message in text part: '{}'", cleaned);
                     return Ok(cleaned.trim().to_string());
                 }
             }
         }
     }
     
+    error!("❌ No text found in any message parts");
     Err(anyhow::anyhow!("No text found in message parts"))
 }
 
 fn strip_html_tags(html: &str) -> String {
     let mut result = html.to_string();
     
-    result = result.replace("<p>", "").replace("</p>", "");
-    
     if let Some(start) = result.find("href=\"") {
         if let Some(end) = result[start+6..].find("\"") {
             let url = &result[start+6..start+6+end];
-            result = url.to_string();
+            if url.contains("github.com") {
+                return url.to_string();
+            }
         }
     }
 
-    result = result.replace("</a>", "").replace(">", "");
+    result = result
+        .replace("<p>", "")
+        .replace("</p>", " ")
+        .replace("<a", "")
+        .replace("</a>", "")
+        .replace(">", " ")
+        .replace("  ", " ");
     
-    result
+    result.trim().to_string()
 }
 
 async fn execute_scan(
