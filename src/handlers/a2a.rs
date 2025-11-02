@@ -38,10 +38,11 @@ pub async fn handle_a2a_request(
     };
     
     let request_id = a2a_request.id.clone();
-    let is_blocking = a2a_request.params.configuration
-        .as_ref()
-        .map(|c| c.blocking)
-        .unwrap_or(true);
+    let is_blocking = true;
+    // let is_blocking = a2a_request.params.configuration
+    //     .as_ref()
+    //     .map(|c| c.blocking)
+    //     .unwrap_or(true);
     
     if is_blocking {
         match process_request(&a2a_request, &data).await {
