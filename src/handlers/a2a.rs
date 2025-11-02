@@ -6,6 +6,8 @@ use crate::services::gemini::GeminiClient;
 use crate::services::state::StateManager;
 use actix_web::{web, HttpResponse, HttpRequest, Result as ActixResult};
 use chrono::Utc;
+use serde_json::json;
+use reqwest::Client;
 use std::sync::Arc;
 use log::{info, error};
 
@@ -37,26 +39,251 @@ pub async fn handle_a2a_request(
     
     let request_id = a2a_request.id.clone();
     
-    match process_request(&a2a_request, &data).await {
-        Ok(response) => Ok(HttpResponse::Ok().json(response)),
-        Err(e) => {
-            error!("Request processing failed: {}", e);
-            let error_response = A2AErrorResponse {
-                jsonrpc: "2.0".to_string(),
-                id: request_id,
-                error: A2AError {
-                    code: -32603,
-                    message: "Internal error".to_string(),
-                    data: Some(A2AErrorData {
-                        details: e.to_string(),
-                    }),
-                },
-            };
-            Ok(HttpResponse::Ok().json(error_response))
+    let is_blocking = a2a_request.params.configuration
+        .as_ref()
+        .map(|c| c.blocking)
+        .unwrap_or(true);
+    
+    info!("Request mode: {}", if is_blocking { "blocking" } else { "non-blocking" });
+    
+    if is_blocking {
+        match process_request_blocking(&a2a_request, &data).await {
+            Ok(response) => Ok(HttpResponse::Ok().json(response)),
+            Err(e) => {
+                error!("Request processing failed: {}", e);
+                let error_response = create_error_response(&request_id, &e.to_string());
+                Ok(HttpResponse::Ok().json(error_response))
+            }
+        }
+    } else {
+        let webhook_url = a2a_request.params.configuration
+            .as_ref()
+            .and_then(|c| c.push_notification_config.as_ref())
+            .and_then(|p| p.get("url"))
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string());
+        
+        let webhook_token = a2a_request.params.configuration
+            .as_ref()
+            .and_then(|c| c.push_notification_config.as_ref())
+            .and_then(|p| p.get("token"))
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string());
+        
+        if let Some(url) = webhook_url {
+            info!("Non-blocking request, will send response to webhook: {}", url);
+            
+            let data_clone = data.clone();
+            let req_clone = a2a_request.clone();
+            
+            actix_web::rt::spawn(async move {
+                match process_request_non_blocking(&req_clone, &data_clone).await {
+                    Ok(result_text) => {
+                        if let Err(e) = send_webhook_result(&url, webhook_token.as_deref(), &result_text, &req_clone.id).await {
+                            error!("Failed to send webhook response: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Request processing failed: {}", e);
+                        if let Err(e) = send_webhook_error(&url, webhook_token.as_deref(), &e.to_string(), &req_clone.id).await {
+                            error!("Failed to send webhook error: {}", e);
+                        }
+                    }
+                }
+            });
+            
+            Ok(HttpResponse::Accepted().json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "status": "processing"
+                }
+            })))
+        } else {
+            error!("Non-blocking request but no webhook URL provided");
+            Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Non-blocking mode requires webhook URL"
+            })))
         }
     }
 }
 
+async fn process_request_blocking(
+    req: &A2ARequest,
+    data: &web::Data<AppState>,
+) -> anyhow::Result<serde_json::Value> {
+    let result_text = process_request_core(req, data).await?;
+    
+    Ok(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": req.id,
+        "result": {
+            "artifacts": [
+                {
+                    "kind": "text",
+                    "text": result_text
+                }
+            ],
+            "history": [],
+            "kind": "task"
+        }
+    }))
+}
+
+async fn process_request_non_blocking(
+    req: &A2ARequest,
+    data: &web::Data<AppState>,
+) -> anyhow::Result<String> {
+    process_request_core(req, data).await
+}
+
+async fn process_request_core(
+    req: &A2ARequest,
+    data: &web::Data<AppState>,
+) -> anyhow::Result<String> {
+    let user_message = extract_user_message(&req.params.message)?;
+    
+    info!("Processing request: {}", user_message);
+    
+    let command = data.gemini_client.parse_user_intent(&user_message, &[]).await?;
+    
+    info!("Parsed command - action: {}, mode: {}", command.action, command.scan_mode);
+    
+    let response_text = match command.action.as_str() {
+        "start_scan" => {
+            if let Some(ref repo_url) = command.repo_url {
+                info!("Starting scan for: {}", repo_url);
+                execute_scan(repo_url, &command.scan_mode, data).await?
+            } else {
+                "Please provide a GitHub repository URL to scan.".to_string()
+            }
+        }
+        "continue_scan" => {
+            if let Some(ref repo_url) = command.repo_url {
+                continue_scan(repo_url, data).await?
+            } else {
+                "Please specify which repository to continue scanning.".to_string()
+            }
+        }
+        "status" => {
+            get_scan_status(data).await?
+        }
+        "help" => {
+            get_help_message()
+        }
+        _ => {
+            "I can help you scan GitHub repositories for exposed secrets. Try 'scan <repo-url>' or 'help' for more info.".to_string()
+        }
+    };
+    
+    info!("Generated response text, length: {}", response_text.len());
+    Ok(response_text)
+}
+
+async fn send_webhook_result(url: &str, token: Option<&str>, result_text: &str, request_id: &str) -> anyhow::Result<()> {
+    use reqwest::Client;
+    use serde_json::json;
+    
+    let webhook_payload = json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": {
+            "artifacts": [
+                {
+                    "kind": "text",
+                    "text": result_text
+                }
+            ],
+            "history": [],
+            "kind": "task"
+        }
+    });
+    
+    info!("=== WEBHOOK PAYLOAD ===");
+    info!("{}", serde_json::to_string_pretty(&webhook_payload).unwrap_or_default());
+    info!("======================");
+    
+    let client = Client::new();
+    let mut request_builder = client.post(url).json(&webhook_payload);
+    
+    if let Some(token) = token {
+        info!("Using Bearer token for authentication");
+        request_builder = request_builder.header("Authorization", format!("Bearer {}", token));
+    }
+    
+    info!("Sending webhook to: {}", url);
+    let resp = request_builder.send().await?;
+    
+    let status = resp.status();
+    let response_body = resp.text().await.unwrap_or_default();
+    
+    info!("=== WEBHOOK RESPONSE ===");
+    info!("Status: {}", status);
+    info!("Body: {}", response_body);
+    info!("========================");
+    
+    if status.is_success() {
+        info!("Webhook accepted by Telex");
+        Ok(())
+    } else {
+        error!("Webhook rejected: {} - {}", status, response_body);
+        Err(anyhow::anyhow!("Webhook failed: {} - {}", status, response_body))
+    }
+}
+
+async fn send_webhook_error(url: &str, token: Option<&str>, error_msg: &str, request_id: &str) -> anyhow::Result<()> {
+    use reqwest::Client;
+    use serde_json::json;
+    
+    let webhook_payload = json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": {
+            "artifacts": [
+                {
+                    "kind": "text",
+                    "text": format!("❌ Error: {}", error_msg)
+                }
+            ],
+            "history": [],
+            "kind": "task"
+        }
+    });
+    
+    let client = Client::new();
+    let mut request_builder = client.post(url).json(&webhook_payload);
+    
+    if let Some(token) = token {
+        request_builder = request_builder.header("Authorization", format!("Bearer {}", token));
+    }
+    
+    info!("Sending webhook error to: {}", url);
+    let resp = request_builder.send().await?;
+    
+    if resp.status().is_success() {
+        info!("Webhook error sent successfully");
+        Ok(())
+    } else {
+        let status = resp.status();
+        let error_text = resp.text().await.unwrap_or_default();
+        error!("Webhook failed with status {}: {}", status, error_text);
+        Err(anyhow::anyhow!("Webhook failed: {} - {}", status, error_text))
+    }
+}
+
+fn create_error_response(request_id: &str, error_msg: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {
+            "code": -32603,
+            "message": "Internal error",
+            "data": {
+                "details": error_msg
+            }
+        }
+    })
+}
 // async fn send_webhook_response(url: &str, token: Option<&str>, response: &A2AResponse, request_id: &str) -> anyhow::Result<()> {
 //     let response_text = response.result.message.parts
 //         .first()
