@@ -1,5 +1,4 @@
 use crate::models::scan::Finding;
-use crate::models::a2a::SimpleMessage;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use log::{info, error};
@@ -122,18 +121,9 @@ impl GeminiClient {
         Ok(text)
     }
 
-    pub async fn parse_user_intent(&self, message: &str, history: &[SimpleMessage]) -> Result<ScanCommand> {
-        let history_context = history
-            .iter()
-            .map(|m| format!("{}: {}", m.role, m.content))
-            .collect::<Vec<_>>()
-            .join("\n");
-
+    pub async fn parse_user_intent(&self, message: &str, _history: &[()]) -> Result<ScanCommand> {
         let prompt = format!(
             r#"Parse this user message and respond ONLY with valid JSON, nothing else.
-
-Conversation history:
-{}
 
 User message: "{}"
 
@@ -150,7 +140,7 @@ Rules:
 - action: "start_scan", "continue_scan", "status", or "help"
 
 JSON only, no markdown, no explanation:"#,
-            history_context, message
+            message
         );
 
         info!("Sending prompt to Gemini for intent parsing");
